@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MFG Report V151S</title>
+  <title>MFG Report V152S</title>
   <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -55,13 +55,20 @@
 <script>
 (function() {
   var APP_NAME = 'MFG Report';
-  var APP_VER = 'V151S';
+  var APP_VER = 'V152S';
   var SB_DEFAULT_URL = 'https://tmbeaswlpvsyjehacgsa.supabase.co';
   var SB_DEFAULT_KEY = 'sb_publishable_OM6ITpYn8LYPWXXhwdA4kQ_HuAyAxV9';
   var CFG_KEY = 'mfg-sb-test-cfg', AUTH_KEY = 'mfg-sb-test-auth', LAST_EMAIL = 'mfg-sb-test-last-email';
   var PORTAL_URL = 'https://eatonmfgkorea-maker.github.io/MFGManagement/';
 
-  function getCfg() { try { var s = JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); if (s && s.url && s.key) return s; } catch (e) {} return { url: SB_DEFAULT_URL, key: SB_DEFAULT_KEY }; }
+  function getCfg() { return { url: SB_DEFAULT_URL, key: SB_DEFAULT_KEY }; }   // 서버 주소 고정
+  var ALLOW_GUEST = true;   // 게스트(로그인 없이 보기 전용) 허용 여부 — MFG Report만
+  var GUEST_KEY = 'mfgsb_guest';
+  function isGuestFlag() { try { if (localStorage.getItem(GUEST_KEY) === '1') return true; } catch (e) {} try { return sessionStorage.getItem(GUEST_KEY) === '1'; } catch (e) { return false; } }
+  function setGuestFlag(on) {
+    try { if (on) localStorage.setItem(GUEST_KEY, '1'); else localStorage.removeItem(GUEST_KEY); } catch (e) {}
+    try { if (on) sessionStorage.setItem(GUEST_KEY, '1'); else sessionStorage.removeItem(GUEST_KEY); } catch (e) {}
+  }
   // 로그인 정보는 IndexedDB에 저장 — localStorage(5MB)는 같은 사이트의 여러 앱이 나눠 써서 꽉 차면 로그인이 저장되지 않음
   var authStore = (function() {
     var dbp = null;
@@ -91,6 +98,7 @@
   var cfg = getCfg(), client = null;
   try { client = window.supabase.createClient(cfg.url, cfg.key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storageKey: AUTH_KEY, storage: authStore } }); } catch (e) { console.error('서버 연결 초기화 실패', e); }
   window.MFG_SB = client; window.MFG_USER = null;
+  if (ALLOW_GUEST && isGuestFlag()) window.MFG_USER = { email: '', name: '게스트', role: 'guest', isAdmin: false, isGuest: true, logout: function() { setGuestFlag(false); location.reload(); } };
   var resolveReady; window.__sbReady = new Promise(function(r) { resolveReady = r; });
   var errText = function(e) { if (!e) return '알 수 없는 오류'; var m = e.message || e.error_description || String(e); return /invalid login credentials/i.test(m) ? '이메일 또는 비밀번호가 올바르지 않습니다.' : m; };
 
@@ -113,17 +121,17 @@
           '<input id="mfgPw" type="password" placeholder="비밀번호" autocomplete="current-password" style="' + inp + '">' +
           '<button id="mfgLoginBtn" type="submit" style="' + btn + 'margin-top:0.25rem;">로그인</button>' +
         '</form>' +
+        (ALLOW_GUEST ? '<button id="mfgGuestBtn" type="button" style="width:100%;margin-top:0.6rem;padding:0.6rem;border:1px solid #475569;border-radius:0.5rem;background:transparent;color:#cbd5e1;font-size:0.9rem;cursor:pointer;">게스트로 둘러보기</button><div style="font-size:0.75rem;color:#64748b;margin-top:0.35rem;">게스트는 일부 화면만 조회할 수 있습니다</div>' : '') +
         '<div id="mfgAuthMsg" style="display:none;font-size:0.85rem;margin-top:1rem;padding:0.6rem 0.8rem;border-radius:0.5rem;line-height:1.6;word-break:break-all;text-align:left;"></div>' +
-        '<div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid rgba(255,255,255,0.08);display:flex;justify-content:space-between;">' +
+        '<div style="margin-top:1.25rem;padding-top:1rem;border-top:1px solid rgba(255,255,255,0.08);">' +
           '<a href="' + PORTAL_URL + '" style="font-size:0.8rem;color:#94a3b8;text-decoration:none;">← 메인 포털로 돌아가기</a>' +
-          '<a href="#" id="mfgCfgLink" style="font-size:0.8rem;color:#94a3b8;text-decoration:none;">⚙️ 서버 설정</a>' +
         '</div>' +
       '</div>';
     document.body.appendChild(div);
     document.body.style.overflow = 'hidden';
     try { $('mfgEmail').value = localStorage.getItem(LAST_EMAIL) || ''; } catch (e) {}
     $('mfgLoginForm').addEventListener('submit', function(ev) { ev.preventDefault(); doLogin(); });
-    $('mfgCfgLink').addEventListener('click', function(ev) { ev.preventDefault(); openSettings(); });
+    if ($('mfgGuestBtn')) $('mfgGuestBtn').addEventListener('click', function() { setGuestFlag(true); enterGuest(); });
     ($('mfgEmail').value ? $('mfgPw') : $('mfgEmail')).focus();
   }
   function removeOverlay() { var el = $('mfgAuthOverlay'); if (el) el.remove(); document.body.style.overflow = ''; }
@@ -135,10 +143,17 @@
     else { el.style.background = 'rgba(59,130,246,0.12)'; el.style.color = '#93c5fd'; }
   }
 
+  function enterGuest() {
+    window.MFG_USER = { email: '', name: '게스트', role: 'guest', isAdmin: false, isGuest: true, logout: function() { setGuestFlag(false); location.reload(); } };
+    removeOverlay();
+    ensureGear();
+    resolveReady(window.MFG_USER);
+  }
   function finishLogin(email) {
     return client.rpc('my_role').then(function(r) {
       if (r.error) throw r.error;
       if (!r.data) { return client.auth.signOut().then(function() { throw { message: '<b>' + email + '</b><br>승인되지 않은 계정입니다. 관리자에게 승인을 요청하세요.' }; }); }
+      setGuestFlag(false);
       window.MFG_USER = { email: email, role: r.data, isAdmin: r.data === 'admin', logout: logout };
       removeOverlay();
       ensureGear();
@@ -148,7 +163,7 @@
   function doLogin() {
     var em = ($('mfgEmail').value || '').trim().toLowerCase(), pw = $('mfgPw').value || '';
     if (!em || !pw) { msg('이메일과 비밀번호를 입력하세요.', 'err'); return; }
-    if (!client) { msg('서버 설정이 없습니다. ⚙️ 서버 설정에서 URL과 key를 입력하세요.', 'err'); return; }
+    if (!client) { msg('서버에 연결하지 못했습니다. 새로고침해 보세요.', 'err'); return; }
     $('mfgLoginBtn').disabled = true; msg('확인 중...', 'info');
     client.auth.signInWithPassword({ email: em, password: pw }).then(function(r) {
       if (r.error) throw r.error;
@@ -163,29 +178,25 @@
     p.then(function() { location.reload(); }, function() { location.reload(); });
   }
 
-  // ===== ⚙️ 서버 설정 (로그아웃 · URL/key · 승인 사용자) =====
+  // ===== ⚙️ 계정 (로그아웃 · 승인 사용자 관리) =====
   function ensureGear() {
     if ($('mfgGear')) return;
     var g = document.createElement('button');
-    g.id = 'mfgGear'; g.type = 'button'; g.title = '서버 설정 / 로그아웃'; g.textContent = '⚙️';
+    g.id = 'mfgGear'; g.type = 'button'; g.title = '계정 / 로그아웃'; g.textContent = '⚙️';
     g.style.cssText = 'position:fixed;right:14px;bottom:14px;z-index:9000;width:38px;height:38px;border-radius:50%;border:1px solid #cbd5e1;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,0.15);cursor:pointer;font-size:18px;line-height:1;';
     g.addEventListener('click', openSettings);
     document.body.appendChild(g);
   }
   function openSettings() {
     if ($('mfgCfgModal')) return;
-    var u = window.MFG_USER, c = getCfg();
+    var u = window.MFG_USER;
     var m = document.createElement('div');
     m.id = 'mfgCfgModal';
     m.style.cssText = 'position:fixed;inset:0;z-index:100000;background:rgba(15,23,42,0.55);display:flex;align-items:center;justify-content:center;padding:1rem;font-family:Pretendard,"Malgun Gothic",-apple-system,sans-serif;';
     m.innerHTML =
       '<div style="background:#fff;border-radius:0.9rem;padding:1.25rem 1.4rem;width:100%;max-width:30rem;max-height:92vh;overflow:auto;color:#1e293b;font-size:0.9rem;">' +
-        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;"><b style="font-size:1.05rem;">⚙️ 서버 설정</b><button id="mfgCfgClose" type="button" style="border:0;background:none;font-size:1.2rem;cursor:pointer;">✕</button></div>' +
-        (u ? '<div style="display:flex;justify-content:space-between;align-items:center;padding:0.6rem 0.75rem;background:#f1f5f9;border-radius:0.5rem;margin-bottom:0.9rem;"><span>' + u.email + ' <span style="color:#64748b;font-size:0.8rem;">(' + (u.isAdmin ? '관리자' : '사용자') + ')</span></span><button id="mfgLogoutBtn" type="button" style="padding:0.3rem 0.7rem;border:1px solid #cbd5e1;border-radius:0.4rem;background:#fff;cursor:pointer;">로그아웃</button></div>' : '') +
-        '<div style="font-weight:600;margin-bottom:0.3rem;">서버 주소 / key</div>' +
-        '<input id="mfgCfgUrl" placeholder="https://xxxx.supabase.co" value="' + c.url + '" style="' + inp.replace('#0b1220', '#fff').replace('#e2e8f0', '#1e293b').replace('#475569', '#cbd5e1') + 'margin-bottom:0.4rem;">' +
-        '<input id="mfgCfgKey" placeholder="sb_publishable_..." value="' + c.key + '" style="' + inp.replace('#0b1220', '#fff').replace('#e2e8f0', '#1e293b').replace('#475569', '#cbd5e1') + '">' +
-        '<div style="display:flex;gap:0.4rem;margin:0.5rem 0 1rem;"><button id="mfgCfgSave" type="button" style="' + btn + 'width:auto;padding:0.45rem 0.9rem;">저장 후 새로고침</button><button id="mfgCfgReset" type="button" style="padding:0.45rem 0.9rem;border:1px solid #cbd5e1;border-radius:0.5rem;background:#fff;cursor:pointer;">기본값</button></div>' +
+        '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.75rem;"><b style="font-size:1.05rem;">⚙️ 계정</b><button id="mfgCfgClose" type="button" style="border:0;background:none;font-size:1.2rem;cursor:pointer;">✕</button></div>' +
+        (u ? '<div style="display:flex;justify-content:space-between;align-items:center;padding:0.6rem 0.75rem;background:#f1f5f9;border-radius:0.5rem;margin-bottom:0.9rem;"><span>' + (u.isGuest ? '게스트 <span style="color:#64748b;font-size:0.8rem;">(보기 전용)</span>' : u.email + ' <span style="color:#64748b;font-size:0.8rem;">(' + (u.isAdmin ? '관리자' : '사용자') + ')</span>') + '</span><button id="mfgLogoutBtn" type="button" style="padding:0.3rem 0.7rem;border:1px solid #cbd5e1;border-radius:0.4rem;background:#fff;cursor:pointer;">' + (u.isGuest ? '로그인하기' : '로그아웃') + '</button></div>' : '') +
         (u && u.isAdmin ? '<div style="font-weight:600;margin-bottom:0.3rem;">승인 사용자</div><div id="mfgApprList" style="border:1px solid #e2e8f0;border-radius:0.5rem;max-height:14rem;overflow:auto;margin-bottom:0.5rem;"></div>' +
           '<div style="display:flex;gap:0.4rem;"><input id="mfgApprEmail" placeholder="이메일" style="' + inp.replace('#0b1220', '#fff').replace('#e2e8f0', '#1e293b').replace('#475569', '#cbd5e1') + 'flex:1;"><select id="mfgApprRole" style="border:1px solid #cbd5e1;border-radius:0.5rem;padding:0 0.4rem;"><option value="user">사용자</option><option value="admin">관리자</option></select><button id="mfgApprAdd" type="button" style="' + btn + 'width:auto;padding:0.45rem 0.8rem;">추가</button></div>' +
           '<div style="font-size:0.78rem;color:#64748b;margin-top:0.5rem;">계정 생성은 Supabase → Authentication → Users → Add user (Auto Confirm 체크). 여기서는 승인 여부와 역할만 관리합니다.</div>' : '') +
@@ -193,14 +204,7 @@
     document.body.appendChild(m);
     $('mfgCfgClose').addEventListener('click', function() { m.remove(); });
     m.addEventListener('click', function(ev) { if (ev.target === m) m.remove(); });
-    if ($('mfgLogoutBtn')) $('mfgLogoutBtn').addEventListener('click', logout);
-    $('mfgCfgSave').addEventListener('click', function() {
-      var url = ($('mfgCfgUrl').value || '').trim().replace(/\/+$/, ''), key = ($('mfgCfgKey').value || '').trim();
-      if (!/^https:\/\/.+/.test(url) || !key) { alert('URL은 https:// 로 시작해야 하고 key가 필요합니다.'); return; }
-      try { localStorage.setItem(CFG_KEY, JSON.stringify({ url: url, key: key })); } catch (e) {}
-      location.reload();
-    });
-    $('mfgCfgReset').addEventListener('click', function() { try { localStorage.removeItem(CFG_KEY); } catch (e) {} location.reload(); });
+    if ($('mfgLogoutBtn')) $('mfgLogoutBtn').addEventListener('click', u && u.isGuest ? u.logout : logout);
     if (u && u.isAdmin) {
       var list = function() {
         client.from('approved_users').select('email,role').order('email').then(function(r) {
@@ -229,10 +233,11 @@
   }
 
   function boot() {
-    if (!client) { overlay(); msg('서버 설정이 없습니다. ⚙️ 서버 설정에서 URL과 key를 입력하세요.', 'err'); return; }
+    if (!client) { overlay(); msg('서버에 연결하지 못했습니다. 새로고침해 보세요.', 'err'); return; }
     client.auth.getSession().then(function(r) {
       var s = r && r.data && r.data.session;
       if (s && s.user && s.user.email) return finishLogin(String(s.user.email).toLowerCase());
+      if (ALLOW_GUEST && isGuestFlag()) { enterGuest(); return; }
       overlay();
     }).catch(function(e) { overlay(); msg(errText(e), 'err'); });
   }
@@ -254,7 +259,7 @@ const {
   useMemo
 } = React;
 const VERSION_NOTES = [{
-  v: 'V151S',
+  v: 'V152S',
   d: '2026-10-27',
   items: ['서버(Supabase)판 — TCP·FE 데이터를 TCPSB·FESB가 저장한 테이블에서 바로 읽음 (백업 파일 없음), 60초마다 변경분 자동 반영', 'MFG Report 설정(OEE 목표·수식·조직도·리뷰 메모 등)은 키별로 서버에 저장 — 바뀐 항목만, 다른 사람 변경도 60초 안에 반영', '로그인: 이메일+비밀번호 (노무비·TCPSB·FESB와 같은 계정)', 'FTIV 데이터와 생산계획 엑셀은 아직 Google 공유저장소 사용']
 }, {
@@ -646,7 +651,7 @@ async function __sbLoadMfgSettings(onProg) {
   if (window.__sbReady) await window.__sbReady;
   if (onProg) onProg({ st: 'req', pct: 0 });
   let states = await __sbFetchAll('prod_state', SB_MFG_SECTION);
-  if (!states.some(r => r.key === '_googleImport')) {
+  if (!states.some(r => r.key === '_googleImport') && !(window.MFG_USER && window.MFG_USER.isGuest)) {
     try { await __sbImportGoogleSettings(onProg); states = await __sbFetchAll('prod_state', SB_MFG_SECTION); }
     catch (e) { console.warn('Google 설정 가져오기 실패 — 서버에 있는 설정만 사용', e); }
   }
@@ -662,6 +667,7 @@ async function __sbLoadMfgSettings(onProg) {
 async function __postSettings(gasUrl, payload) {
   const client = window.MFG_SB; if (!client) throw new Error('서버 연결 없음');
   if (window.__sbReady) await window.__sbReady;
+  if (window.MFG_USER && window.MFG_USER.isGuest) return { ok: true, json: async () => ({ ok: true, name: '(게스트 — 저장하지 않음)' }) };
   const me = (window.MFG_USER && window.MFG_USER.email) || '';
   const c = __sbCache.MFG || (__sbCache.MFG = { logs: new Map(), state: {}, lastPull: '1970-01-01T00:00:00Z' });
   const now = new Date().toISOString();
@@ -4426,7 +4432,7 @@ function App() {
     [key]: !prev[key]
   }));
   const updateLotFtfrNote = (key, value) => {
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('mfgsb_guest') === '1') return;
+    if (typeof localStorage !== 'undefined' && !!(window.MFG_USER && window.MFG_USER.isGuest)) return;
     setLotFtfrNotes(prev => {
       const next = {
         ...prev
@@ -4917,7 +4923,7 @@ function App() {
     return 0;
   };
   const setUccModule = (date, value) => {
-    if (typeof localStorage !== 'undefined' && localStorage.getItem('mfgsb_guest') === '1') return;
+    if (typeof localStorage !== 'undefined' && !!(window.MFG_USER && window.MFG_USER.isGuest)) return;
     const n = parseFloat(value);
     const valid = !isNaN(n) && n > 0;
     setModuleQuantities(prev => {
@@ -8595,7 +8601,7 @@ function App() {
     icon: '📤',
     label: '데이터 출력'
   }];
-  const isGuest = typeof localStorage !== 'undefined' && localStorage.getItem('mfgsb_guest') === '1';
+  const isGuest = typeof localStorage !== 'undefined' && !!(window.MFG_USER && window.MFG_USER.isGuest);
   const GUEST_TABS = ['dashboard', 'oee', 'oeedetail', 'quantity', 'defect', 'rework', 'downtime', 'tool', 'lotftfr', 'export'];
   // V134: 게스트는 펼침 메뉴 안의 허용 화면을 꺼내서 단일 메뉴로 표시
   const visibleTabs = isGuest ? TABS.flatMap(t => t.children ? t.children.filter(k => GUEST_TABS.includes(k.id)) : (GUEST_TABS.includes(t.id) ? [t] : [])) : TABS;
@@ -8622,7 +8628,7 @@ function App() {
     className: "relative group ml-1.5 inline-block align-middle"
   }, React.createElement("span", {
     className: "px-1.5 py-px bg-slate-100 rounded text-[11px] font-semibold text-slate-600 cursor-help hover:bg-slate-200 transition-colors tabular"
-  }, "V151S"), React.createElement("div", {
+  }, "V152S"), React.createElement("div", {
     className: "hidden group-hover:block absolute left-0 top-full mt-2 w-[380px] max-h-[70vh] overflow-y-auto p-4 bg-slate-900 border border-slate-600 rounded-xl shadow-2xl z-[9999] text-left cursor-default"
   }, React.createElement("div", {
     className: "text-[11px] font-bold text-indigo-300 mb-3 pb-2 border-b border-slate-700"
