@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MFG Report V150S</title>
+  <title>MFG Report V151S</title>
   <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -55,15 +55,41 @@
 <script>
 (function() {
   var APP_NAME = 'MFG Report';
-  var APP_VER = 'V150S';
+  var APP_VER = 'V151S';
   var SB_DEFAULT_URL = 'https://tmbeaswlpvsyjehacgsa.supabase.co';
   var SB_DEFAULT_KEY = 'sb_publishable_OM6ITpYn8LYPWXXhwdA4kQ_HuAyAxV9';
   var CFG_KEY = 'mfg-sb-test-cfg', AUTH_KEY = 'mfg-sb-test-auth', LAST_EMAIL = 'mfg-sb-test-last-email';
   var PORTAL_URL = 'https://eatonmfgkorea-maker.github.io/MFGManagement/';
 
   function getCfg() { try { var s = JSON.parse(localStorage.getItem(CFG_KEY) || 'null'); if (s && s.url && s.key) return s; } catch (e) {} return { url: SB_DEFAULT_URL, key: SB_DEFAULT_KEY }; }
+  // 로그인 정보는 IndexedDB에 저장 — localStorage(5MB)는 같은 사이트의 여러 앱이 나눠 써서 꽉 차면 로그인이 저장되지 않음
+  var authStore = (function() {
+    var dbp = null;
+    function db() {
+      if (!dbp) dbp = new Promise(function(res, rej) {
+        var r = indexedDB.open('mfg_sb_auth', 1);
+        r.onupgradeneeded = function() { r.result.createObjectStore('kv'); };
+        r.onsuccess = function() { res(r.result); };
+        r.onerror = function() { rej(r.error); };
+      });
+      return dbp;
+    }
+    function run(mode, fn) {
+      return db().then(function(d) { return new Promise(function(res, rej) {
+        var t = d.transaction('kv', mode), q = fn(t.objectStore('kv'));
+        t.oncomplete = function() { res(q ? q.result : undefined); };
+        t.onerror = function() { rej(t.error); };
+      }); });
+    }
+    function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+    return {
+      getItem: function(k) { return run('readonly', function(s) { return s.get(k); }).then(function(v) { return v != null ? v : lsGet(k); }, function() { return lsGet(k); }); },
+      setItem: function(k, v) { try { localStorage.setItem(k, v); } catch (e) {} return run('readwrite', function(s) { return s.put(v, k); }).catch(function() {}); },
+      removeItem: function(k) { try { localStorage.removeItem(k); } catch (e) {} return run('readwrite', function(s) { return s.delete(k); }).catch(function() {}); }
+    };
+  })();
   var cfg = getCfg(), client = null;
-  try { client = window.supabase.createClient(cfg.url, cfg.key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storageKey: AUTH_KEY } }); } catch (e) { console.error('서버 연결 초기화 실패', e); }
+  try { client = window.supabase.createClient(cfg.url, cfg.key, { auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: false, storageKey: AUTH_KEY, storage: authStore } }); } catch (e) { console.error('서버 연결 초기화 실패', e); }
   window.MFG_SB = client; window.MFG_USER = null;
   var resolveReady; window.__sbReady = new Promise(function(r) { resolveReady = r; });
   var errText = function(e) { if (!e) return '알 수 없는 오류'; var m = e.message || e.error_description || String(e); return /invalid login credentials/i.test(m) ? '이메일 또는 비밀번호가 올바르지 않습니다.' : m; };
@@ -228,7 +254,7 @@ const {
   useMemo
 } = React;
 const VERSION_NOTES = [{
-  v: 'V150S',
+  v: 'V151S',
   d: '2026-10-27',
   items: ['서버(Supabase)판 — TCP·FE 데이터를 TCPSB·FESB가 저장한 테이블에서 바로 읽음 (백업 파일 없음), 60초마다 변경분 자동 반영', 'MFG Report 설정(OEE 목표·수식·조직도·리뷰 메모 등)은 키별로 서버에 저장 — 바뀐 항목만, 다른 사람 변경도 60초 안에 반영', '로그인: 이메일+비밀번호 (노무비·TCPSB·FESB와 같은 계정)', 'FTIV 데이터와 생산계획 엑셀은 아직 Google 공유저장소 사용']
 }, {
@@ -8596,7 +8622,7 @@ function App() {
     className: "relative group ml-1.5 inline-block align-middle"
   }, React.createElement("span", {
     className: "px-1.5 py-px bg-slate-100 rounded text-[11px] font-semibold text-slate-600 cursor-help hover:bg-slate-200 transition-colors tabular"
-  }, "V150S"), React.createElement("div", {
+  }, "V151S"), React.createElement("div", {
     className: "hidden group-hover:block absolute left-0 top-full mt-2 w-[380px] max-h-[70vh] overflow-y-auto p-4 bg-slate-900 border border-slate-600 rounded-xl shadow-2xl z-[9999] text-left cursor-default"
   }, React.createElement("div", {
     className: "text-[11px] font-bold text-indigo-300 mb-3 pb-2 border-b border-slate-700"
