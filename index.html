@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MFG Report V148S</title>
+  <title>MFG Report V149S</title>
   <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -55,7 +55,7 @@
 <script>
 (function() {
   var APP_NAME = 'MFG Report';
-  var APP_VER = 'V148S';
+  var APP_VER = 'V149S';
   var SB_DEFAULT_URL = 'https://tmbeaswlpvsyjehacgsa.supabase.co';
   var SB_DEFAULT_KEY = 'sb_publishable_OM6ITpYn8LYPWXXhwdA4kQ_HuAyAxV9';
   var CFG_KEY = 'mfg-sb-test-cfg', AUTH_KEY = 'mfg-sb-test-auth', LAST_EMAIL = 'mfg-sb-test-last-email';
@@ -228,7 +228,7 @@ const {
   useMemo
 } = React;
 const VERSION_NOTES = [{
-  v: 'V148S',
+  v: 'V149S',
   d: '2026-10-27',
   items: ['서버(Supabase)판 — TCP·FE 데이터를 TCPSB·FESB가 저장한 테이블에서 바로 읽음 (백업 파일 없음), 60초마다 변경분 자동 반영', 'MFG Report 설정(OEE 목표·수식·조직도·리뷰 메모 등)은 키별로 서버에 저장 — 바뀐 항목만, 다른 사람 변경도 60초 안에 반영', '로그인: 이메일+비밀번호 (노무비·TCPSB·FESB와 같은 계정)', 'FTIV 데이터와 생산계획 엑셀은 아직 Google 공유저장소 사용']
 }, {
@@ -492,27 +492,50 @@ async function __gzipToB64(obj) {
 const GAS_LIST_PREFIX = 'tcp-backup-,fe-backup-,mfg-settings-,plan-xlsx,fe-plan-auto';
 // ===================== MFG Report — 서버(Supabase) 읽기/저장 =====================
 //  · TCP·FE 데이터: prod_logs(건별) + prod_state(키별) 를 읽어 기존 백업 JSON 모양으로 조립
+//  · 처음 한 번은 전체를 6쪽씩 동시에 받고, 받은 내용은 이 PC(IndexedDB)에 보관 → 다음부터는 바뀐 것만
 //  · MFG Report 설정: prod_state section='MFG' 에 키별 저장 (바뀐 키만)
 //  · 60초마다/창 복귀 시 변경분만 받아 반영
 const SB_MFG_SECTION = 'MFG';
 const SB_LOG_KINDS = { production: 'productionLogs', downtime: 'downtimeLogs', defect: 'defectLogs', rework: 'reworkLogs' };
+const SB_CACHE_MAX_AGE = 3 * 24 * 3600 * 1000;   // 보관본이 3일보다 오래되면 전체 다시 받기
 const __sbCanon = v => JSON.stringify(v, (k, val) => (val && typeof val === 'object' && !Array.isArray(val)) ? Object.keys(val).sort().reduce((o, kk) => { o[kk] = val[kk]; return o; }, {}) : val);
 const __sbErr = e => (e && (e.message || e.error_description || (typeof e === 'string' ? e : JSON.stringify(e)))) || '오류';
 const __sbMaxTs = (rows, cur) => rows.reduce((m, r) => (r.updated_at && r.updated_at > m ? r.updated_at : m), cur || '1970-01-01T00:00:00Z');
+const __sbUrl = () => (window.MFG_SB && window.MFG_SB.supabaseUrl) || '';
 // 섹션별 캐시: logs Map(kind:id → data), state {key → data}, lastPull
 const __sbCache = { TCP: null, FE: null, MFG: null };
+const __sbSaveT = {};
+function __sbCacheSave(section) {
+  clearTimeout(__sbSaveT[section]);
+  __sbSaveT[section] = setTimeout(() => {
+    const c = __sbCache[section]; if (!c) return;
+    try { __idb.set('sbsec:' + section, { v: 1, url: __sbUrl(), logs: Array.from(c.logs.entries()), state: c.state, lastPull: c.lastPull, savedAt: Date.now() }); } catch (e) {}
+  }, 800);
+}
+// 1,000건씩 나눠 받되 6쪽씩 동시에 (순서가 바뀌지 않는 기본키 순으로 나눔)
 async function __sbFetchAll(table, section, mod, onPage) {
   const client = window.MFG_SB; if (!client) throw new Error('서버 연결 없음');
-  const out = []; const PAGE = 1000;
-  for (let from = 0; ; from += PAGE) {
-    let q = client.from(table).select('*').eq('section', section).order('updated_at', { ascending: true }).range(from, from + PAGE - 1);
-    q = mod ? mod(q) : q;
-    const { data, error } = await q;
-    if (error) throw error;
-    out.push(...(data || []));
-    if (onPage) onPage(out.length);
-    if (!data || data.length < PAGE) break;
+  const PAGE = 1000, PAR = 6;
+  const cols = table === 'prod_logs' ? 'kind,id,data,updated_at,deleted_at' : 'key,data,updated_at';
+  const q = (from, withCount) => {
+    let x = client.from(table).select(cols, withCount ? { count: 'exact' } : undefined).eq('section', section);
+    x = mod ? mod(x) : x;
+    x = table === 'prod_logs' ? x.order('kind', { ascending: true }).order('id', { ascending: true }) : x.order('key', { ascending: true });
+    return x.range(from, from + PAGE - 1);
+  };
+  const first = await q(0, true);
+  if (first.error) throw first.error;
+  const out = (first.data || []).slice();
+  let total = first.count;
+  if (onPage) onPage(out.length, total || out.length);
+  if (total == null) {   // 개수를 못 받으면 차례로
+    for (let f = PAGE; out.length === f; f += PAGE) { const r = await q(f); if (r.error) throw r.error; out.push(...(r.data || [])); if (onPage) onPage(out.length, out.length); if (!r.data || r.data.length < PAGE) break; }
+    return out;
   }
+  const offs = []; for (let f = PAGE; f < total; f += PAGE) offs.push(f);
+  let i = 0;
+  const worker = async () => { while (i < offs.length) { const f = offs[i++]; const r = await q(f); if (r.error) throw r.error; out.push(...(r.data || [])); if (onPage) onPage(out.length, total); } };
+  await Promise.all(Array.from({ length: Math.min(PAR, offs.length) }, worker));
   return out;
 }
 function __sbBuildData(c) {
@@ -522,17 +545,32 @@ function __sbBuildData(c) {
   d.savedAt = Date.now();
   return d;
 }
-// 섹션 전체 받기 → 백업 JSON 모양
+// 섹션 받기 → 백업 JSON 모양. 보관본이 있으면 바뀐 것만.
 async function __sbLoadSection(section, onProg) {
   if (window.__sbReady) await window.__sbReady;
   if (onProg) onProg({ st: 'req', pct: 0 });
-  const logs = await __sbFetchAll('prod_logs', section, q => q.is('deleted_at', null), n => { if (onProg) onProg({ st: 'down', pct: Math.min(99, Math.round(n / 160)), kb: Math.round(n * 0.4) }); });
+  let cached = null;
+  try { cached = await __idb.get('sbsec:' + section); } catch (e) {}
+  if (cached && cached.v === 1 && cached.url === __sbUrl() && cached.lastPull && Date.now() - (cached.savedAt || 0) < SB_CACHE_MAX_AGE) {
+    __sbCache[section] = { logs: new Map(cached.logs || []), state: cached.state || {}, lastPull: cached.lastPull };
+    if (onProg) onProg({ st: 'down', pct: 60, cache: true, kb: Math.round((cached.logs || []).length * 0.4) });
+    try {
+      const r = await __sbPullSection(section);
+      const c = __sbCache[section];
+      if (onProg) onProg({ st: 'done', pct: 100, cache: true, delta: r ? r.changed : 0, kb: Math.round(c.logs.size * 0.4) });
+      if (!r) __sbCacheSave(section);   // savedAt 갱신
+      if (c.logs.size === 0 && Object.keys(c.state).length === 0) return null;
+      return __sbBuildData(c);
+    } catch (e) { console.warn('변경분 받기 실패 — 전체 다시 받기', e); __sbCache[section] = null; }
+  }
+  const logs = await __sbFetchAll('prod_logs', section, q => q.is('deleted_at', null), (n, t) => { if (onProg) onProg({ st: 'down', pct: Math.min(99, Math.round(n / Math.max(1, t) * 100)), kb: Math.round(t * 0.4) }); });
   const states = await __sbFetchAll('prod_state', section);
   const c = { logs: new Map(), state: {}, lastPull: '1970-01-01T00:00:00Z' };
   logs.forEach(r => c.logs.set(r.kind + ':' + r.id, r.data));
   states.forEach(r => { c.state[r.key] = r.data; });
   c.lastPull = __sbMaxTs(logs.concat(states), c.lastPull);
   __sbCache[section] = c;
+  __sbCacheSave(section);
   if (onProg) onProg({ st: 'done', pct: 100, kb: Math.round(logs.length * 0.4) });
   if (logs.length === 0 && states.length === 0) return null;   // 아직 아무것도 안 올라온 섹션
   return __sbBuildData(c);
@@ -540,15 +578,16 @@ async function __sbLoadSection(section, onProg) {
 // 섹션 변경분 받기 → 바뀐 게 있으면 새 데이터 객체, 없으면 null
 async function __sbPullSection(section) {
   const c = __sbCache[section]; if (!c) return null;
-  const logs = await __sbFetchAll('prod_logs', section, q => q.gt('updated_at', c.lastPull));
+  const logs = section === SB_MFG_SECTION ? [] : await __sbFetchAll('prod_logs', section, q => q.gt('updated_at', c.lastPull));
   const states = await __sbFetchAll('prod_state', section, q => q.gt('updated_at', c.lastPull));
   let changed = 0; const changedKeys = [];
   logs.forEach(r => { const key = r.kind + ':' + r.id; if (r.deleted_at) { if (c.logs.delete(key)) changed++; } else { const prev = c.logs.get(key); if (prev === undefined || __sbCanon(prev) !== __sbCanon(r.data)) { c.logs.set(key, r.data); changed++; } } });
   states.forEach(r => { if (__sbCanon(c.state[r.key]) !== __sbCanon(r.data)) { c.state[r.key] = r.data; changed++; changedKeys.push(r.key); } });
   c.lastPull = __sbMaxTs(logs.concat(states), c.lastPull);
+  if (changed && section !== SB_MFG_SECTION) __sbCacheSave(section);
   return changed ? { data: __sbBuildData(c), changed, changedKeys } : null;
 }
-// MFG Report 설정 읽기 (키별 → 하나의 객체)
+// MFG Report 설정 읽기 (키별 → 하나의 객체) — 작아서 매번 전체
 async function __sbLoadMfgSettings(onProg) {
   if (window.__sbReady) await window.__sbReady;
   if (onProg) onProg({ st: 'req', pct: 0 });
@@ -2336,7 +2375,7 @@ function LoadProgress({ prog }) {
   React.useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 500); return () => clearInterval(t); }, []);
   const sec = Math.max(0, Math.round((Date.now() - (prog.t0 || Date.now())) / 1000));
   const rows = [['tcp', 'TCP 생산 데이터'], ['fe', 'FE 생산 데이터'], ['set', 'MFG Report 설정']];
-  const stText = r => r.st === 'wait' ? '대기' : r.st === 'req' ? '공유저장소 응답 기다리는 중…' : r.st === 'down' ? `내려받는 중 ${r.pct}%` : r.st === 'parse' ? '압축 푸는 중…' : r.st === 'done' ? (r.cache ? '완료 (이전에 받아둔 파일)' : '완료') : r.st === 'fail' ? '실패' : '';
+  const stText = r => r.st === 'wait' ? '대기' : r.st === 'req' ? '서버 확인 중…' : r.st === 'down' ? (r.cache ? '바뀐 것만 받는 중…' : `받는 중 ${r.pct}%`) : r.st === 'parse' ? '압축 푸는 중…' : r.st === 'done' ? (r.cache ? (r.delta ? `완료 (바뀐 ${r.delta}건만 받음)` : '완료 (바뀐 것 없음)') : '완료') : r.st === 'fail' ? '실패' : '';
   const color = r => r.st === 'done' ? 'bg-emerald-500' : r.st === 'fail' ? 'bg-rose-400' : 'bg-indigo-500';
   const width = r => r.st === 'done' || r.st === 'parse' ? 100 : r.st === 'down' ? r.pct : r.st === 'req' ? 4 : 0;
   return React.createElement("div", { className: "mx-auto mt-4 text-left", style: { maxWidth: 420 } },
@@ -2350,7 +2389,7 @@ function LoadProgress({ prog }) {
           React.createElement("span", { className: r.st === 'done' ? 'text-emerald-600' : r.st === 'fail' ? 'text-rose-500' : 'text-slate-500' }, stText(r))),
         React.createElement("div", { className: "h-2 bg-slate-100 rounded-full overflow-hidden" },
           React.createElement("div", { className: color(r) + ' h-full rounded-full transition-all duration-200' + (r.st === 'req' ? ' animate-pulse' : ''), style: { width: width(r) + '%' } }))); }),
-    React.createElement("p", { className: "text-[11px] text-slate-400 mt-3" }, `${sec}초 경과 · 공유저장소가 파일을 준비하는 동안은 막대가 멈춰 보일 수 있습니다. 10초 넘게 그대로면 새로고침(Ctrl+F5) 해 보세요.`));
+    React.createElement("p", { className: "text-[11px] text-slate-400 mt-3" }, `${sec}초 경과 · 이 PC에서 처음 열 때만 전체를 받고, 다음부터는 바뀐 것만 받습니다.`));
 }
 
 function ValidationPanel({
@@ -8523,7 +8562,7 @@ function App() {
     className: "relative group ml-1.5 inline-block align-middle"
   }, React.createElement("span", {
     className: "px-1.5 py-px bg-slate-100 rounded text-[11px] font-semibold text-slate-600 cursor-help hover:bg-slate-200 transition-colors tabular"
-  }, "V148S"), React.createElement("div", {
+  }, "V149S"), React.createElement("div", {
     className: "hidden group-hover:block absolute left-0 top-full mt-2 w-[380px] max-h-[70vh] overflow-y-auto p-4 bg-slate-900 border border-slate-600 rounded-xl shadow-2xl z-[9999] text-left cursor-default"
   }, React.createElement("div", {
     className: "text-[11px] font-bold text-indigo-300 mb-3 pb-2 border-b border-slate-700"
