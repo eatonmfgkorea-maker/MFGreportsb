@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MFG Report V149S</title>
+  <title>MFG Report V150S</title>
   <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -55,7 +55,7 @@
 <script>
 (function() {
   var APP_NAME = 'MFG Report';
-  var APP_VER = 'V149S';
+  var APP_VER = 'V150S';
   var SB_DEFAULT_URL = 'https://tmbeaswlpvsyjehacgsa.supabase.co';
   var SB_DEFAULT_KEY = 'sb_publishable_OM6ITpYn8LYPWXXhwdA4kQ_HuAyAxV9';
   var CFG_KEY = 'mfg-sb-test-cfg', AUTH_KEY = 'mfg-sb-test-auth', LAST_EMAIL = 'mfg-sb-test-last-email';
@@ -228,7 +228,7 @@ const {
   useMemo
 } = React;
 const VERSION_NOTES = [{
-  v: 'V149S',
+  v: 'V150S',
   d: '2026-10-27',
   items: ['서버(Supabase)판 — TCP·FE 데이터를 TCPSB·FESB가 저장한 테이블에서 바로 읽음 (백업 파일 없음), 60초마다 변경분 자동 반영', 'MFG Report 설정(OEE 목표·수식·조직도·리뷰 메모 등)은 키별로 서버에 저장 — 바뀐 항목만, 다른 사람 변경도 60초 안에 반영', '로그인: 이메일+비밀번호 (노무비·TCPSB·FESB와 같은 계정)', 'FTIV 데이터와 생산계획 엑셀은 아직 Google 공유저장소 사용']
 }, {
@@ -515,7 +515,7 @@ function __sbCacheSave(section) {
 // 1,000건씩 나눠 받되 6쪽씩 동시에 (순서가 바뀌지 않는 기본키 순으로 나눔)
 async function __sbFetchAll(table, section, mod, onPage) {
   const client = window.MFG_SB; if (!client) throw new Error('서버 연결 없음');
-  const PAGE = 1000, PAR = 6;
+  const PAGE = 1000, PAR = 4;
   const cols = table === 'prod_logs' ? 'kind,id,data,updated_at,deleted_at' : 'key,data,updated_at';
   const q = (from, withCount) => {
     let x = client.from(table).select(cols, withCount ? { count: 'exact' } : undefined).eq('section', section);
@@ -523,18 +523,20 @@ async function __sbFetchAll(table, section, mod, onPage) {
     x = table === 'prod_logs' ? x.order('kind', { ascending: true }).order('id', { ascending: true }) : x.order('key', { ascending: true });
     return x.range(from, from + PAGE - 1);
   };
-  const first = await q(0, true);
+  // 한 쪽이 실패하면 1초·2초 쉬고 3번까지 다시
+  const qr = async (from, withCount) => { let last; for (let t = 0; t < 3; t++) { if (t) await new Promise(r => setTimeout(r, 1000 * t)); const r = await q(from, withCount); if (!r.error) return r; last = r; } return last; };
+  const first = await qr(0, true);
   if (first.error) throw first.error;
   const out = (first.data || []).slice();
   let total = first.count;
   if (onPage) onPage(out.length, total || out.length);
   if (total == null) {   // 개수를 못 받으면 차례로
-    for (let f = PAGE; out.length === f; f += PAGE) { const r = await q(f); if (r.error) throw r.error; out.push(...(r.data || [])); if (onPage) onPage(out.length, out.length); if (!r.data || r.data.length < PAGE) break; }
+    for (let f = PAGE; out.length === f; f += PAGE) { const r = await qr(f); if (r.error) throw r.error; out.push(...(r.data || [])); if (onPage) onPage(out.length, out.length); if (!r.data || r.data.length < PAGE) break; }
     return out;
   }
   const offs = []; for (let f = PAGE; f < total; f += PAGE) offs.push(f);
   let i = 0;
-  const worker = async () => { while (i < offs.length) { const f = offs[i++]; const r = await q(f); if (r.error) throw r.error; out.push(...(r.data || [])); if (onPage) onPage(out.length, total); } };
+  const worker = async () => { while (i < offs.length) { const f = offs[i++]; const r = await qr(f); if (r.error) throw r.error; out.push(...(r.data || [])); if (onPage) onPage(out.length, total); } };
   await Promise.all(Array.from({ length: Math.min(PAR, offs.length) }, worker));
   return out;
 }
@@ -587,13 +589,43 @@ async function __sbPullSection(section) {
   if (changed && section !== SB_MFG_SECTION) __sbCacheSave(section);
   return changed ? { data: __sbBuildData(c), changed, changedKeys } : null;
 }
+// Google 공유저장소의 최신 MFG Report 설정을 서버로 (처음 한 번만 — 서버에 _googleImport 표시를 남김)
+const SB_GOOGLE_GAS = 'https://script.google.com/macros/s/AKfycbxLFrxbAaBt1bBa3SUdDY9wY48tvt85mEDaj3tiKhyw_R7oJCC9GbOWLfWbdSohnQtB/exec';
+async function __sbImportGoogleSettings(onProg) {
+  const client = window.MFG_SB;
+  if (onProg) onProg({ st: 'down', pct: 20, cache: false });
+  const lj = await (await fetch(SB_GOOGLE_GAS + '?action=list&prefix=mfg-settings-&_=' + Date.now())).json();
+  const files = ((lj && lj.files) || []).filter(f => f && f.name && +f.size > 0).sort((a, b) => new Date(b.modified) - new Date(a.modified));
+  let data = null, used = null;
+  for (const f of files.slice(0, 4)) {
+    try {
+      const j = await (await fetch(SB_GOOGLE_GAS + '?action=load&id=' + encodeURIComponent(f.id) + '&_=' + Date.now())).json();
+      const d = j && j.ok ? await __normalizeBackup(j.data) : null;
+      if (d && typeof d === 'object') { data = d; used = f; break; }
+    } catch (e) { console.warn('Google 설정 읽기 실패', f.name, e); }
+  }
+  if (onProg) onProg({ st: 'down', pct: 70 });
+  const me = (window.MFG_USER && window.MFG_USER.email) || '';
+  const now = new Date().toISOString();
+  const rows = [];
+  if (data) Object.entries(data).forEach(([k, v]) => { if (k === 'version' || k === 'exportedAt' || v === undefined || v === null) return; rows.push({ section: SB_MFG_SECTION, key: k, data: v, updated_at: now, updated_by: me }); });
+  rows.push({ section: SB_MFG_SECTION, key: '_googleImport', data: { at: now, file: used ? used.name : null, keys: rows.length }, updated_at: now, updated_by: me });
+  const { error } = await client.from('prod_state').upsert(rows, { onConflict: 'section,key' });
+  if (error) throw error;
+  console.log('Google 설정 가져옴:', used ? used.name : '(없음)', rows.length - 1, '개 항목');
+  return rows;
+}
 // MFG Report 설정 읽기 (키별 → 하나의 객체) — 작아서 매번 전체
 async function __sbLoadMfgSettings(onProg) {
   if (window.__sbReady) await window.__sbReady;
   if (onProg) onProg({ st: 'req', pct: 0 });
-  const states = await __sbFetchAll('prod_state', SB_MFG_SECTION);
+  let states = await __sbFetchAll('prod_state', SB_MFG_SECTION);
+  if (!states.some(r => r.key === '_googleImport')) {
+    try { await __sbImportGoogleSettings(onProg); states = await __sbFetchAll('prod_state', SB_MFG_SECTION); }
+    catch (e) { console.warn('Google 설정 가져오기 실패 — 서버에 있는 설정만 사용', e); }
+  }
   const c = { logs: new Map(), state: {}, lastPull: '1970-01-01T00:00:00Z' };
-  states.forEach(r => { c.state[r.key] = r.data; });
+  states.forEach(r => { if (r.key !== '_googleImport') c.state[r.key] = r.data; });
   c.lastPull = __sbMaxTs(states, c.lastPull);
   __sbCache.MFG = c;
   if (onProg) onProg({ st: 'done', pct: 100, kb: Math.round(JSON.stringify(c.state).length / 1024) });
@@ -2375,7 +2407,7 @@ function LoadProgress({ prog }) {
   React.useEffect(() => { const t = setInterval(() => setTick(x => x + 1), 500); return () => clearInterval(t); }, []);
   const sec = Math.max(0, Math.round((Date.now() - (prog.t0 || Date.now())) / 1000));
   const rows = [['tcp', 'TCP 생산 데이터'], ['fe', 'FE 생산 데이터'], ['set', 'MFG Report 설정']];
-  const stText = r => r.st === 'wait' ? '대기' : r.st === 'req' ? '서버 확인 중…' : r.st === 'down' ? (r.cache ? '바뀐 것만 받는 중…' : `받는 중 ${r.pct}%`) : r.st === 'parse' ? '압축 푸는 중…' : r.st === 'done' ? (r.cache ? (r.delta ? `완료 (바뀐 ${r.delta}건만 받음)` : '완료 (바뀐 것 없음)') : '완료') : r.st === 'fail' ? '실패' : '';
+  const stText = r => r.st === 'wait' ? '대기' : r.st === 'req' ? '서버 확인 중…' : r.st === 'down' ? (r.cache ? '바뀐 것만 받는 중…' : `받는 중 ${r.pct}%`) : r.st === 'parse' ? '압축 푸는 중…' : r.st === 'done' ? (r.cache ? (r.delta ? `완료 (바뀐 ${r.delta}건만 받음)` : '완료 (바뀐 것 없음)') : '완료') : r.st === 'fail' ? ('실패' + (r.err ? ': ' + r.err : '')) : '';
   const color = r => r.st === 'done' ? 'bg-emerald-500' : r.st === 'fail' ? 'bg-rose-400' : 'bg-indigo-500';
   const width = r => r.st === 'done' || r.st === 'parse' ? 100 : r.st === 'down' ? r.pct : r.st === 'req' ? 4 : 0;
   return React.createElement("div", { className: "mx-auto mt-4 text-left", style: { maxWidth: 420 } },
@@ -6423,9 +6455,11 @@ function App() {
         if (window.__sbReady) await window.__sbReady;
         if (cancelled) return;
         setLoadProg(p => ({ ...p, step: 'files', nFiles: 3 }));
-        const __tcpP = __sbLoadSection('TCP', st => setProg('tcp', st));
-        const __feP = __sbLoadSection('FE', st => setProg('fe', st));
-        const __setP = __sbLoadMfgSettings(st => setProg('set', st));
+        const __sbFail = (k, name) => e => { console.error(name + ' 불러오기 실패', e); setProg(k, { st: 'fail', err: __sbErr(e) }); window.__sbLoadErr = (window.__sbLoadErr ? window.__sbLoadErr + ' / ' : '') + name + ': ' + __sbErr(e); return null; };
+        window.__sbLoadErr = '';
+        const __tcpP = __sbLoadSection('TCP', st => setProg('tcp', st)).catch(__sbFail('tcp', 'TCP'));
+        const __feP = __sbLoadSection('FE', st => setProg('fe', st)).catch(__sbFail('fe', 'FE'));
+        const __setP = __sbLoadMfgSettings(st => setProg('set', st)).catch(__sbFail('set', '설정'));
         let tcpLoaded = false,
           feLoaded = false;
         __tcpP.then(d => {
@@ -8562,7 +8596,7 @@ function App() {
     className: "relative group ml-1.5 inline-block align-middle"
   }, React.createElement("span", {
     className: "px-1.5 py-px bg-slate-100 rounded text-[11px] font-semibold text-slate-600 cursor-help hover:bg-slate-200 transition-colors tabular"
-  }, "V149S"), React.createElement("div", {
+  }, "V150S"), React.createElement("div", {
     className: "hidden group-hover:block absolute left-0 top-full mt-2 w-[380px] max-h-[70vh] overflow-y-auto p-4 bg-slate-900 border border-slate-600 rounded-xl shadow-2xl z-[9999] text-left cursor-default"
   }, React.createElement("div", {
     className: "text-[11px] font-bold text-indigo-300 mb-3 pb-2 border-b border-slate-700"
@@ -25986,7 +26020,7 @@ function App() {
     className: "text-lg font-semibold text-slate-700 mb-2"
   }, "데이터를 먼저 업로드해주세요"), React.createElement("p", {
     className: "text-xs text-slate-500 mb-4"
-  }, "자동 복원이 실패했거나 백업 파일이 없습니다"), React.createElement("button", {
+  }, window.__sbLoadErr ? "서버에서 불러오지 못했습니다 — " + window.__sbLoadErr + " (새로고침하면 다시 시도)" : "서버에 아직 데이터가 없습니다"), React.createElement("button", {
     onClick: () => setActiveTab('upload'),
     className: "mt-2 px-5 py-2 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors"
   }, "데이터 업로드"))), showFtfrConfig && (() => {
