@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>MFG Report V154S</title>
+  <title>MFG Report V155S</title>
   <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.production.min.js" crossorigin></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
   <script src="https://cdn.tailwindcss.com"></script>
@@ -55,7 +55,7 @@
 <script>
 (function() {
   var APP_NAME = 'MFG Report';
-  var APP_VER = 'V154S';
+  var APP_VER = 'V155S';
   var SB_DEFAULT_URL = 'https://tmbeaswlpvsyjehacgsa.supabase.co';
   var SB_DEFAULT_KEY = 'sb_publishable_OM6ITpYn8LYPWXXhwdA4kQ_HuAyAxV9';
   var CFG_KEY = 'mfg-sb-test-cfg', AUTH_KEY = 'mfg-sb-test-auth', LAST_EMAIL = 'mfg-sb-test-last-email';
@@ -352,9 +352,9 @@ const {
   useMemo
 } = React;
 const VERSION_NOTES = [{
-  v: 'V154S',
+  v: 'V155S',
   d: '2026-10-27',
-  items: ['서버(Supabase)판 — TCP·FE 데이터를 TCPSB·FESB가 저장한 테이블에서 바로 읽음 (백업 파일 없음), 60초마다 변경분 자동 반영', 'MFG Report 설정(OEE 목표·수식·조직도·리뷰 메모 등)은 키별로 서버에 저장 — 바뀐 항목만, 다른 사람 변경도 60초 안에 반영', '로그인: 이름+비밀번호 (TCP·FE·노무비와 같은 계정) — 처음 접속 때 본인 비밀번호로 변경, 관리자는 ⚙️ 계정에서 사용자 추가·비밀번호 초기화', '게스트로 둘러보기(보기 전용)', 'FTIV 데이터와 생산계획 엑셀은 아직 Google 공유저장소 사용']
+  items: ['서버(Supabase)판 — TCP·FE 데이터를 TCPSB·FESB가 저장한 테이블에서 바로 읽음 (백업 파일 없음), 60초마다 변경분 자동 반영', 'MFG Report 설정(OEE 목표·수식·조직도·리뷰 메모 등)은 키별로 서버에 저장 — 바뀐 항목만, 다른 사람 변경도 60초 안에 반영', '로그인: 이름+비밀번호 (TCP·FE·노무비와 같은 계정) — 처음 접속 때 본인 비밀번호로 변경, 관리자는 ⚙️ 계정에서 사용자 추가·비밀번호 초기화', '게스트로 둘러보기(보기 전용)', '백업: MFG Report 설정을 3시간에 한 번 Google 공유저장소에 백업 파일로 남김 (최근 60개)', 'FTIV 데이터와 생산계획 엑셀은 Google 공유저장소 그대로 사용']
 }, {
   v: 'V149',
   d: '2026-10-29',
@@ -737,7 +737,7 @@ async function __sbImportGoogleSettings(onProg) {
   const now = new Date().toISOString();
   const rows = [];
   if (data) Object.entries(data).forEach(([k, v]) => { if (k === 'version' || k === 'exportedAt' || v === undefined || v === null) return; rows.push({ section: SB_MFG_SECTION, key: k, data: v, updated_at: now, updated_by: me }); });
-  rows.push({ section: SB_MFG_SECTION, key: '_googleImport', data: { at: now, file: used ? used.name : null, keys: rows.length }, updated_at: now, updated_by: me });
+  rows.push({ section: SB_MFG_SECTION, key: '_googleImport', data: { at: now, file: used ? used.name : null, keys: rows.length, cut: 'final' }, updated_at: now, updated_by: me });
   const { error } = await client.from('prod_state').upsert(rows, { onConflict: 'section,key' });
   if (error) throw error;
   console.log('Google 설정 가져옴:', used ? used.name : '(없음)', rows.length - 1, '개 항목');
@@ -748,7 +748,9 @@ async function __sbLoadMfgSettings(onProg) {
   if (window.__sbReady) await window.__sbReady;
   if (onProg) onProg({ st: 'req', pct: 0 });
   let states = await __sbFetchAll('prod_state', SB_MFG_SECTION);
-  if (!states.some(r => r.key === '_googleImport') && !(window.MFG_USER && window.MFG_USER.isGuest)) {
+  // 원본 주소 전환 때 한 번 더: Google에 마지막으로 저장된 설정을 가져옴 (cut:'final' 표시 후로는 다시 안 함)
+  const __imp = states.find(r => r.key === '_googleImport');
+  if (!(__imp && __imp.data && __imp.data.cut === 'final') && !(window.MFG_USER && window.MFG_USER.isGuest)) {
     try { await __sbImportGoogleSettings(onProg); states = await __sbFetchAll('prod_state', SB_MFG_SECTION); }
     catch (e) { console.warn('Google 설정 가져오기 실패 — 서버에 있는 설정만 사용', e); }
   }
@@ -778,8 +780,28 @@ async function __postSettings(gasUrl, payload) {
     const { error } = await client.from('prod_state').upsert(rows, { onConflict: 'section,key' });
     if (error) throw error;
     rows.forEach(r => { c.state[r.key] = r.data; });
+    __sbMfgDriveBackup(c.state);
   }
   return { ok: true, json: async () => ({ ok: true, name: '서버 (' + rows.length + '개 항목 저장)' }) };
+}
+
+// 백업: MFG Report 설정을 Google 공유저장소에 백업 파일로 남김 — 모든 PC 통틀어 3시간에 1개, 최근 60개 보관
+let __sbMfgBkAt = 0;
+async function __sbMfgDriveBackup(state) {
+  if (Date.now() - __sbMfgBkAt < 30 * 60000) return;   // 이 PC는 30분에 한 번만 확인
+  __sbMfgBkAt = Date.now();
+  try {
+    const pre = 'mfg-settings-';
+    const lj = await (await fetch(SB_GOOGLE_GAS + '?action=list&prefix=' + pre + '&limit=3&_=' + Date.now())).json();
+    const newest = ((lj && lj.files) || []).map(f => new Date(f.modified).getTime()).filter(x => x > 0).sort((a, b) => b - a)[0] || 0;
+    if (Date.now() - newest < 3 * 3600000) return;
+    const data = { version: 8, exportedAt: new Date().toISOString(), source: 'server', ...state };
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    const gz = typeof CompressionStream !== 'undefined';
+    await fetch(SB_GOOGLE_GAS, { method: 'POST', headers: { 'Content-Type': 'text/plain;charset=utf-8' }, body: JSON.stringify({ filename: pre + ts + (gz ? '.json.gz' : '.json'), data: gz ? await __gzipToB64(data) : data }) });
+    console.log('공유저장소 설정 백업 완료', pre + ts);
+    fetch(SB_GOOGLE_GAS + '?action=prune&prefix=' + pre + '&keep=60&max=100').catch(() => {});
+  } catch (e) { console.warn('공유저장소 설정 백업 실패 (다음에 다시 시도)', e); __sbMfgBkAt = Date.now() - 20 * 60000; }
 }
 const __idb = {
   _db: null,
@@ -8725,7 +8747,7 @@ function App() {
     className: "relative group ml-1.5 inline-block align-middle"
   }, React.createElement("span", {
     className: "px-1.5 py-px bg-slate-100 rounded text-[11px] font-semibold text-slate-600 cursor-help hover:bg-slate-200 transition-colors tabular"
-  }, "V154S"), React.createElement("div", {
+  }, "V155S"), React.createElement("div", {
     className: "hidden group-hover:block absolute left-0 top-full mt-2 w-[380px] max-h-[70vh] overflow-y-auto p-4 bg-slate-900 border border-slate-600 rounded-xl shadow-2xl z-[9999] text-left cursor-default"
   }, React.createElement("div", {
     className: "text-[11px] font-bold text-indigo-300 mb-3 pb-2 border-b border-slate-700"
